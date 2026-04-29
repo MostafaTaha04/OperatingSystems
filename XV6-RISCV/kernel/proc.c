@@ -681,3 +681,77 @@ procdump(void)
     printf("\n");
   }
 }
+
+int co_yield_process(int target_pid, int value) {
+    struct proc *p = myproc();
+    struct proc *target = 0;
+
+    // 1. Basic validation
+    if (target_pid <= 0 || target_pid == p->pid) {
+        return -1;
+    }
+
+    // 2. Find target process safely
+    for(struct proc *np = proc; np < &proc[NPROC]; np++) {
+        acquire(&np->lock);
+        if(np->pid == target_pid) {
+            target = np;
+            release(&np->lock);
+            break;
+        }
+        release(&np->lock);
+    }
+
+    if(target == 0) return -1;
+
+    // 3. Strict Lock Ordering to prevent deadlocks
+    struct proc *first = p < target ? p : target;
+    struct proc *second = p < target ? target : p;
+
+    acquire(&first->lock);
+    acquire(&second->lock);
+
+    if(target->state == UNUSED || target->state == ZOMBIE || target->killed) {
+        release(&second->lock);
+        release(&first->lock);
+        return -1;
+    }
+
+    // 4. The Switch Logic
+    if(target->state == SLEEPING && target->chan == target) {
+        // --- DIRECT HANDOFF (Target is waiting) ---
+        target->trapframe->a0 = value;
+        
+        p->state = SLEEPING;
+        p->chan = p;
+        target->state = RUNNING;
+        
+        // Hijack the CPU process pointer
+        mycpu()->proc = target;
+        
+        // Release OUR lock, but keep TARGET'S lock held! 
+        // The target expects its lock to be held when it wakes up.
+        release(&p->lock);
+        
+        // Direct context switch bypassing the scheduler
+        swtch(&p->context, &target->context);
+        
+        // When we wake up here (yielded back to us), our lock is held.
+        release(&p->lock);
+    } else {
+        // --- SLEEP (Target is not ready yet) ---
+        p->state = SLEEPING;
+        p->chan = p;
+        
+        // We must release the target's lock before going to sleep
+        release(&target->lock);
+        
+        // Use sched() instead of direct swtch to preserve CPU interrupt states!
+        sched();
+        
+        // When we wake up (either by scheduler or direct yield), our lock is held.
+        release(&p->lock);
+    }
+
+    return p->trapframe->a0;
+}

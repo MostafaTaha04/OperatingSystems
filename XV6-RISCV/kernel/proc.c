@@ -446,7 +446,7 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-  
+
   c->proc = 0;
   for(;;){
     // Avoid deadlock by ensuring that devices can interrupt.
@@ -462,11 +462,18 @@ scheduler(void)
         c->proc = p;
         swtch(&c->context, &p->context);
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
+        // --- TASK 3 FIX: DIRECT HANDOFF ---
+        // Because of direct switching, the process that returns 
+        // to the scheduler might not be the original 'p'.
+        // We must release the lock of the process that ACTUALLY returned.
+        struct proc *returning_proc = c->proc;
         c->proc = 0;
+        release(&returning_proc->lock);
+        
+      } else {
+        // If not runnable, just release the lock normally
+        release(&p->lock);
       }
-      release(&p->lock);
     }
   }
 }
@@ -686,40 +693,33 @@ int co_yield_process(int target_pid, int value) {
     struct proc *p = myproc();
     struct proc *target = 0;
 
-    // 1. Basic validation
-    if (target_pid <= 0 || target_pid == p->pid) {
-        return -1;
-    }
+    // Error check: Invalid PID or yielding to self
+    if (target_pid <= 0 || target_pid == p->pid) return -1;
 
-    // 2. Find target process safely
+    // 1. Find the target process and lock it
     for(struct proc *np = proc; np < &proc[NPROC]; np++) {
         acquire(&np->lock);
         if(np->pid == target_pid) {
             target = np;
-            release(&np->lock);
-            break;
+            break; // Keep target->lock acquired
         }
         release(&np->lock);
     }
 
     if(target == 0) return -1;
 
-    // 3. Strict Lock Ordering to prevent deadlocks
-    struct proc *first = p < target ? p : target;
-    struct proc *second = p < target ? target : p;
-
-    acquire(&first->lock);
-    acquire(&second->lock);
+    // 2. Lock our own process
+    acquire(&p->lock);
 
     if(target->state == UNUSED || target->state == ZOMBIE || target->killed) {
-        release(&second->lock);
-        release(&first->lock);
+        release(&p->lock);
+        release(&target->lock);
         return -1;
     }
 
-    // 4. The Switch Logic
+    // 3. The Switch Logic
     if(target->state == SLEEPING && target->chan == target) {
-        // --- DIRECT HANDOFF (Target is waiting) ---
+        // --- DIRECT HANDOFF ---
         target->trapframe->a0 = value;
         
         p->state = SLEEPING;
@@ -728,28 +728,26 @@ int co_yield_process(int target_pid, int value) {
         
         // Hijack the CPU process pointer
         mycpu()->proc = target;
-        
-        // Release OUR lock, but keep TARGET'S lock held! 
-        // The target expects its lock to be held when it wakes up.
+
+        // Release OUR lock BEFORE switching.
+        // We leave target->lock ACQUIRED because the target process 
+        // will wake up and immediately release it!
         release(&p->lock);
         
         // Direct context switch bypassing the scheduler
         swtch(&p->context, &target->context);
         
-        // When we wake up here (yielded back to us), our lock is held.
+        // --- After waking up from another process yielding to us ---
         release(&p->lock);
     } else {
-        // --- SLEEP (Target is not ready yet) ---
+        // --- WAIT FOR TARGET ---
         p->state = SLEEPING;
         p->chan = p;
-        
-        // We must release the target's lock before going to sleep
         release(&target->lock);
         
-        // Use sched() instead of direct swtch to preserve CPU interrupt states!
-        sched();
+        // Use the official sched() because the target isn't ready
+        sched(); 
         
-        // When we wake up (either by scheduler or direct yield), our lock is held.
         release(&p->lock);
     }
 

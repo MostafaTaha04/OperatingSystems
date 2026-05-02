@@ -11,14 +11,12 @@ int main() {
         for (;;) {
             int value = co_yield(pid1, 1);
             printf("Child received: %d\n", value); // Should print 2
-            sleep(10); // Added slight delay to make terminal readable
         }
     } else { 
         // Parent
         for (;;) {
             int value = co_yield(pid2, 2);
             printf("Parent received: %d\n", value); // Should print 1
-            sleep(10); // Added slight delay to make terminal readable
         }
     }
     exit(0);

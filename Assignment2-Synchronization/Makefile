@@ -132,6 +132,13 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
+	$U/_wc\
+    $U/_zombie\
+    $U/_testprng\
+	$U/_testprng\
+    $U/_testlock\
+	$U/_testlock\
+    $U/_relay_race\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
